@@ -1,0 +1,10 @@
+diffusers
+easydict
+einops
+peft
+pillow
+protobuf
+requests
+safetensors
+sentencepiece
+transformers
