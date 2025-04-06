@@ -7,20 +7,86 @@ import folder_paths
 
 from .easycontrol.lora_helper import set_single_lora
 from .easycontrol.pipeline import FluxPipeline
-from .easycontrol.transformer_flux import FluxTransformer2DModel
+from .easycontrol.transformer_flux import EasyControlFluxTransformer2DModel
 
 
 def clear_cache(transformer):
-    for name, attn_processor in transformer.attn_processors.items():
-        attn_processor.bank_kv.clear()
+    """Clears the attention processor cache in the transformer."""
+    if hasattr(transformer, "attn_processors"):
+        for name, attn_processor in transformer.attn_processors.items():
+            if hasattr(attn_processor, "bank_kv") and hasattr(
+                attn_processor.bank_kv, "clear"
+            ):
+                attn_processor.bank_kv.clear()
+
+
+def comfy_tensor_to_pil(tensor: torch.Tensor | np.ndarray) -> list[Image.Image]:
+    """Converts a ComfyUI IMAGE tensor or NumPy array to a list of PIL Images."""
+    images = []
+    if tensor is None:
+        return images
+
+    if isinstance(tensor, torch.Tensor):
+        # Ensure tensor is on CPU and detached before converting to numpy
+        tensor = tensor.cpu().detach()
+        if tensor.dim() == 4:  # Batch dimension present B, H, W, C
+            for i in range(tensor.shape[0]):
+                img_np = tensor[i].numpy()
+                # Ensure range is [0, 255] and type is uint8
+                img_np = (img_np.clip(0, 1) * 255).astype(np.uint8)
+                images.append(Image.fromarray(img_np))
+        elif tensor.dim() == 3:  # Single image H, W, C
+            img_np = tensor.numpy()
+            img_np = (img_np.clip(0, 1) * 255).astype(np.uint8)
+            images.append(Image.fromarray(img_np))
+        else:
+            print(
+                f"Warning: Unexpected tensor dimension {tensor.dim()}, skipping conversion."
+            )
+    elif isinstance(tensor, np.ndarray):
+        # Assuming numpy array follows [0, 1] float or [0, 255] uint8 convention
+        if tensor.ndim == 4:  # Batch, H, W, C
+            for i in range(tensor.shape[0]):
+                img = tensor[i]
+                if img.dtype == np.float32 or img.dtype == np.float64:
+                    img = (img.clip(0, 1) * 255).astype(np.uint8)
+                elif img.dtype != np.uint8:
+                    print(
+                        f"Warning: Unsupported numpy dtype {img.dtype}, attempting conversion."
+                    )
+                    img = (img.clip(0, 1) * 255).astype(np.uint8)  # Best guess
+                images.append(Image.fromarray(img))
+        elif tensor.ndim == 3:  # H, W, C
+            img = tensor
+            if img.dtype == np.float32 or img.dtype == np.float64:
+                img = (img.clip(0, 1) * 255).astype(np.uint8)
+            elif img.dtype != np.uint8:
+                print(
+                    f"Warning: Unsupported numpy dtype {img.dtype}, attempting conversion."
+                )
+                img = (img.clip(0, 1) * 255).astype(np.uint8)  # Best guess
+            images.append(Image.fromarray(img))
+        else:
+            print(
+                f"Warning: Unexpected numpy array dimension {tensor.ndim}, skipping conversion."
+            )
+    else:
+        print(
+            f"Warning: Input type {type(tensor)} is not torch.Tensor or np.ndarray, skipping conversion."
+        )
+
+    return images
 
 
 class EasyControlLoader:
+    """Loads the Flux model, creates a custom pipeline, and applies an EasyControl LoRA."""
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
                 "base_path": ("STRING",),
+                "ckpt_name": (folder_paths.get_filename_list("checkpoints"),),
                 "lora_name": (folder_paths.get_filename_list("loras"),),
                 "lora_weight": (
                     "FLOAT",
@@ -38,18 +104,12 @@ class EasyControlLoader:
     FUNCTION = "load_model"
     CATEGORY = "EasyControl"
 
-    def load_model(self, base_path, lora_name, lora_weight, cond_size):
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        pipe = FluxPipeline.from_pretrained(
-            base_path,
-            torch_dtype=torch.bfloat16,
-            device=device,
-        )
-        transformer = FluxTransformer2DModel.from_pretrained(
-            base_path,
-            subfolder="transformer",
-            torch_dtype=torch.bfloat16,
-            device=device,
+    def load_model(self, base_path, ckpt_name, lora_name, lora_weight, cond_size):
+        device = "cuda" if torch.cuda.is_available() else "mps"
+
+        ckpt_path = folder_paths.get_full_path("checkpoints", ckpt_name)
+        transformer = EasyControlFluxTransformer2DModel.from_single_file(
+            ckpt_path, device=device, torch_dtype=torch.bfloat16
         )
         lora_path = folder_paths.get_full_path("loras", lora_name)
         set_single_lora(
@@ -59,13 +119,18 @@ class EasyControlLoader:
             cond_size=cond_size,
             device=device,
         )
-        pipe.transformer = transformer
+        pipe = FluxPipeline.from_pretrained(
+            base_path,
+            transformer=transformer,
+            torch_dtype=torch.bfloat16,
+        )
         pipe.to(device)
-
         return (pipe,)
 
 
 class EasyControlSampler:
+    """Generates images using the EasyControl pipeline with optional spatial and subject conditioning."""
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -117,52 +182,16 @@ class EasyControlSampler:
         spatial_image=None,
         subject_image=None,
     ):
-        # Prepare spatial images
-        spatial_images = []
-        if spatial_image is not None:
-            # Convert from tensor or numpy to PIL
-            if isinstance(spatial_image, torch.Tensor):
-                # Handle single image or batch
-                if spatial_image.dim() == 4:  # [batch, height, width, channels]
-                    for i in range(spatial_image.shape[0]):
-                        img = spatial_image[i].cpu().numpy()
-                        spatial_image_pil = Image.fromarray(
-                            (img * 255).astype(np.uint8)
-                        )
-                        spatial_images.append(spatial_image_pil)
-                else:  # [height, width, channels]
-                    img = spatial_image.cpu().numpy()
-                    spatial_image_pil = Image.fromarray((img * 255).astype(np.uint8))
-                    spatial_images.append(spatial_image_pil)
-            elif isinstance(spatial_image, np.ndarray):
-                spatial_image_pil = Image.fromarray(
-                    (spatial_image * 255).astype(np.uint8)
-                )
-                spatial_images.append(spatial_image_pil)
+        """Generates an image using the pipeline and conditioning images."""
+        # Prepare conditioning images by converting them to PIL format
+        spatial_images_pil = comfy_tensor_to_pil(spatial_image)
+        subject_images_pil = comfy_tensor_to_pil(subject_image)
 
-        # Prepare subject images
-        subject_images = []
-        if subject_image is not None:
-            # Convert from tensor or numpy to PIL
-            if isinstance(subject_image, torch.Tensor):
-                # Handle single image or batch
-                if subject_image.dim() == 4:  # [batch, height, width, channels]
-                    for i in range(subject_image.shape[0]):
-                        img = subject_image[i].cpu().numpy()
-                        subject_image_pil = Image.fromarray(
-                            (img * 255).astype(np.uint8)
-                        )
-                        subject_images.append(subject_image_pil)
-                else:  # [height, width, channels]
-                    img = subject_image.cpu().numpy()
-                    subject_image_pil = Image.fromarray((img * 255).astype(np.uint8))
-                    subject_images.append(subject_image_pil)
-            elif isinstance(subject_image, np.ndarray):
-                subject_image_pil = Image.fromarray(
-                    (subject_image * 255).astype(np.uint8)
-                )
-                subject_images.append(subject_image_pil)
+        # Use None if list is empty, as pipeline might expect None instead of []
+        spatial_images_arg = spatial_images_pil if spatial_images_pil else None
+        subject_images_arg = subject_images_pil if subject_images_pil else None
 
+        print(f"EasyControl: Generating image with seed {seed}")
         # Generate image
         output = pipe(
             prompt=prompt,
@@ -170,31 +199,62 @@ class EasyControlSampler:
             width=width,
             guidance_scale=guidance_scale,
             num_inference_steps=num_inference_steps,
-            max_sequence_length=512,
-            generator=torch.Generator("cpu").manual_seed(seed),
-            spatial_images=spatial_images,
-            subject_images=subject_images,
+            max_sequence_length=512,  # Consider making this configurable if needed
+            generator=torch.Generator("cpu").manual_seed(
+                seed
+            ),  # Use pipeline's device for generator
+            spatial_images=spatial_images_arg,
+            subject_images=subject_images_arg,
             cond_size=cond_size,
         )
 
-        # Convert PIL image to numpy array, then to torch.Tensor
-        if isinstance(output, FluxPipelineOutput):
-            image = np.array(output.images[0]) / 255.0
+        # Convert output PIL image(s) back to ComfyUI tensor format (B, H, W, C)
+        output_images = []
+        if isinstance(output, FluxPipelineOutput) and output.images:
+            pil_images = output.images  # Assuming this is a list of PIL images
+        elif isinstance(
+            output, list
+        ):  # Handle case where output is directly a list of PIL
+            pil_images = output
+        elif isinstance(output, Image.Image):  # Handle single PIL image output
+            pil_images = [output]
         else:
-            image = np.array(output[0]) / 255.0
+            print(f"Warning: Unexpected output type from pipeline: {type(output)}")
+            pil_images = []
 
-        # Convert numpy array to torch.Tensor
-        image = torch.from_numpy(image).float()
+        for pil_image in pil_images:
+            if isinstance(pil_image, Image.Image):
+                try:
+                    image_np = np.array(pil_image).astype(np.float32) / 255.0
+                    image_tensor = torch.from_numpy(image_np)
+                    # Ensure tensor has 4 dims: [Batch, Height, Width, Channel]
+                    if image_tensor.dim() == 3:  # HWC -> BHWC
+                        image_tensor = image_tensor.unsqueeze(0)
+                    elif image_tensor.dim() != 4:
+                        print(
+                            f"Warning: Skipping image with unexpected dimensions: {image_tensor.shape}"
+                        )
+                        continue
+                    output_images.append(image_tensor)
+                except Exception as e:
+                    print(f"Error converting PIL image to tensor: {e}")
+            else:
+                print(f"Warning: Item in output is not a PIL image: {type(pil_image)}")
 
-        # Add batch dimension to make it [batch, height, width, channels]
-        if image.dim() == 3:  # [height, width, channels]
-            image = image.unsqueeze(
-                0
-            )  # Add batch dimension to make it [1, height, width, channels]
+        if not output_images:
+            print("Error: No valid images generated or converted.")
+            # Return an empty tensor with expected channel dimension
+            # Use float() for consistency with typical ComfyUI IMAGE tensors
+            return (torch.zeros((0, height, width, 3), dtype=torch.float32),)
 
+        # Concatenate batch if multiple images were generated/returned
+        final_output_tensor = torch.cat(output_images, dim=0)
+
+        # Clear cache after generation
         clear_cache(pipe.transformer)
+        print("EasyControl: Cache cleared.")
 
-        return (image,)
+        return (final_output_tensor,)  # Return as tuple
 
 
 NODE_CLASS_MAPPINGS = {
@@ -203,6 +263,6 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "EasyControlLoader": "EasyControlLoader",
-    "EasyControlSampler": "EasyControlSampler",
+    "EasyControlLoader": "EasyControl Loader",  # Added space for readability
+    "EasyControlSampler": "EasyControl Sampler",  # Added space for readability
 }

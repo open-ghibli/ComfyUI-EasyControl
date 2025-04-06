@@ -1,0 +1,15 @@
+[project]
+name = "EasyControl"
+description = "ComfyUI EasyControl Nodes is a collection of nodes for ComfyUI that allows you to load and use EasyControl models."
+version = "1.0.0"
+license = {file = "LICENSE"}
+dependencies = ["diffusers", "easydict", "einops", "peft", "pillow", "protobuf", "safetensors", "sentencepiece", "transformers"]
+
+[project.urls]
+Repository = "https://github.com/open-ghibli/ComfyUI-EasyControl"
+#  Used by Comfy Registry https://comfyregistry.org
+
+[tool.comfy]
+PublisherId = "open-ghibli"
+DisplayName = "ComfyUI-easycontrol"
+Icon = ""
