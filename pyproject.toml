@@ -11,5 +11,5 @@ Repository = "https://github.com/open-ghibli/ComfyUI-EasyControl"
 
 [tool.comfy]
 PublisherId = "ghibli"
-DisplayName = "ComfyUI-easycontrol"
+DisplayName = "ComfyUI-EasyControl"
 Icon = ""
