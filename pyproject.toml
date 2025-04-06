@@ -10,6 +10,6 @@ Repository = "https://github.com/open-ghibli/ComfyUI-EasyControl"
 #  Used by Comfy Registry https://comfyregistry.org
 
 [tool.comfy]
-PublisherId = "open-ghibli"
+PublisherId = "ghibli"
 DisplayName = "ComfyUI-easycontrol"
 Icon = ""
