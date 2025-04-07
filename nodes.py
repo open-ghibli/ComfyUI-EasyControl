@@ -105,11 +105,18 @@ class EasyControlLoader:
     CATEGORY = "EasyControl"
 
     def load_model(self, base_path, ckpt_name, lora_name, lora_weight, cond_size):
-        device = "cuda" if torch.cuda.is_available() else "mps"
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        if torch.backends.mps.is_available():
+            device = "mps"
 
         ckpt_path = folder_paths.get_full_path("checkpoints", ckpt_name)
         transformer = EasyControlFluxTransformer2DModel.from_single_file(
-            ckpt_path, device=device, torch_dtype=torch.bfloat16
+            ckpt_path,
+            config=f"{base_path}/transformer",
+            local_files_only=True,
+            device=device,
+            torch_dtype=torch.bfloat16,
         )
         lora_path = folder_paths.get_full_path("loras", lora_name)
         set_single_lora(
